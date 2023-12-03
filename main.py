@@ -1,3 +1,4 @@
+import math
 from machine import Pin, PWM, Timer, UART, ADC
 import json
 
@@ -22,24 +23,34 @@ head_servo.duty_u16(4914)
 head_servo_pos = 4900
 HEAD_POS_MIN = 3000
 HEAD_POS_MAX = 6300
-HEAD_SPEED = 120
+HEAD_SPEED = 200
 
 adc_batt = ADC(PIN_VOLTAGE)
 
-# PWM_LOOKUP_LEFT =  [0, 50, 60, 70, 90, 110, 140, 255]
-# PWM_LOOKUP_RIGHT = [0, 40, 51, 60, 77,  93, 140, 255]
-PWM_LOOKUP_LEFT =  [0, 12800, 15360, 17920, 23040, 28160, 35840, 65535]
-PWM_LOOKUP_RIGHT = [0, 10240, 13056, 15360, 19712,  23808, 35840, 65535]
+# lookup table for PWM values for motor control. Values for left and right motors are measured and
+# calibrated to ensure that the bot moves strait
+PWM_LOOKUP =  [ (0,0),
+                (12800,10240),
+                (15360,13056),
+                (17920,15360),
+                (23040,19712),
+                (28160,23808),
+                (35840,35840),
+                (65535,65535) ]
+
 MAX_SPEED = 7
+MOTOR_LEFT = 0
+MOTOR_RIGHT = 1
 SPEED_INC = 0.5
+PWM_FREQ = 5000
 cur_speed_left = 0.0
 cur_speed_right = 0.0
 set_speed_left = 0.0
 set_speed_right = 0.0
-motor_left_fwd = PWM(Pin(PIN_MOTOR_LEFT_FWD), freq=2000, duty_u16=0)
-motor_left_rev = PWM(Pin(PIN_MOTOR_LEFT_REV), freq=2000, duty_u16=0)
-motor_right_fwd = PWM(Pin(PIN_MOTOR_RIGHT_FWD), freq=2000, duty_u16=0)
-motor_right_rev = PWM(Pin(PIN_MOTOR_RIGHT_REV), freq=2000, duty_u16=0)
+motor_left_fwd = PWM(Pin(PIN_MOTOR_LEFT_FWD), freq=PWM_FREQ, duty_u16=0)
+motor_left_rev = PWM(Pin(PIN_MOTOR_LEFT_REV), freq=PWM_FREQ, duty_u16=0)
+motor_right_fwd = PWM(Pin(PIN_MOTOR_RIGHT_FWD), freq=PWM_FREQ, duty_u16=0)
+motor_right_rev = PWM(Pin(PIN_MOTOR_RIGHT_REV), freq=PWM_FREQ, duty_u16=0)
 
 # command from RPI
 fwd = False
@@ -61,12 +72,23 @@ def send_telemetry(timer):
         }
     }
     voltage = adc_batt.read_u16()
-    json_tele["battery"]["value"] =  round(voltage * 0.033076) / 100
+    json_tele["battery"]["value"] =  round(voltage * 0.0477) / 100
     msg = json.dumps(json_tele, separators=(",", ":"))
     msg = msg + "\n"
     # print(f"send tele msg: {msg}")
     uart_bot.write(msg)
     led_pin.value(0)
+
+
+def lookup_pwm_value(speed:float, motor: int) -> int:
+    speed = math.fabs(speed)
+    speed_index = math.floor(speed)
+    speed_fraction = speed - speed_index
+    if speed_index >= MAX_SPEED:
+        return PWM_LOOKUP[MAX_SPEED][motor]
+    lower_val = PWM_LOOKUP[speed_index][motor]
+    upper_val = PWM_LOOKUP[speed_index+1][motor]
+    return int(lower_val+(upper_val-lower_val)*speed_fraction)
 
 
 def motorcontrol(timer):
@@ -131,19 +153,22 @@ def motorcontrol(timer):
     elif cur_speed_right > MAX_SPEED:
         cur_speed_right = MAX_SPEED
 
+    pwm_left = lookup_pwm_value(cur_speed_left, MOTOR_LEFT)
+    pwm_right = lookup_pwm_value(cur_speed_right, MOTOR_RIGHT)
+
     if cur_speed_left >= 0:
         motor_left_rev.duty_u16(0)
-        motor_left_fwd.duty_u16(int(cur_speed_left*9360))
+        motor_left_fwd.duty_u16(pwm_left)
     else:
         motor_left_fwd.duty_u16(0)
-        motor_left_rev.duty_u16(int(-cur_speed_left*9360))
+        motor_left_rev.duty_u16(pwm_left)
 
     if cur_speed_right >= 0:
         motor_right_rev.duty_u16(0)
-        motor_right_fwd.duty_u16(int(cur_speed_right*9360))
+        motor_right_fwd.duty_u16(pwm_right)
     else:
         motor_right_fwd.duty_u16(0)
-        motor_right_rev.duty_u16(int(-cur_speed_right*9360))
+        motor_right_rev.duty_u16(pwm_right)
 
     if cam_up:
         head_servo_pos = head_servo_pos + HEAD_SPEED
@@ -156,7 +181,7 @@ def motorcontrol(timer):
         head_servo_pos = HEAD_POS_MAX
 
     head_servo.duty_u16(head_servo_pos)
-    print(f"servo: {head_servo_pos}")
+    print(f"PWM: left={pwm_left}, right={pwm_right}")
 
 
 if __name__ == '__main__':
